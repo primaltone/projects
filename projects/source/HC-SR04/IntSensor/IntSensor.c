@@ -29,13 +29,13 @@
 #include <unistd.h>
 
 
-#define DEBUG 0
+#define DEBUG 1
 // Use GPIO Pin 17, which is Pin 0 for wiringPi library
 #define TRIGGER 0
 // Use GPIO Pin 27, which is Pin 2 for wiringPi library
 #define ECHO 2
 sem_t calculation;
-#define min_sample_store_period 10 // jwd make me a variable
+#define min_sample_store_period 30 // jwd make me a variable
 #define FILE_NAME "/mnt/nfs/home/share/sump/sump_log1.txt"
 
 struct sample_data {
@@ -49,6 +49,8 @@ int sample_counter = 0;
 #define SAMPLE_PERIOD_ms 2000
 #define TRIGGER_DURATION_MS 10
 #define RUNNING_AVG_SAMPLES 5
+#define CHANGE_THRESHOLD_PERCENT 4
+
 /* return delay in micro seconds */
 long timevaldiff(struct timeval *starttime, struct timeval *finishtime)
 {
@@ -141,34 +143,34 @@ double MeasureDistance(void)
 	return distance;
 }
 
-int SaveSample(struct sample_data *pSample)
-{
-	int Output_fd,rc;
-	char buffer [128];
-	char timeBuf[128];
-	struct tm *info;
+int SaveSample(const time_t time, const double distance)
+{   
+    int Output_fd,rc;
+    char buffer [128];
+    char timeBuf[128];
+    struct tm *info;
 
-	info = localtime( &pSample->time );
+    Output_fd = open(FILE_NAME, O_WRONLY | O_CREAT| O_APPEND, 0644);
 
-	strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", info);
-	snprintf(buffer, sizeof(buffer),"%s %.2lf\n", timeBuf,pSample->distance); 
-	Output_fd = open(FILE_NAME, O_WRONLY | O_CREAT| O_APPEND, 0644);
+    if(Output_fd == -1){
+        perror("open");
+        return 3;
+    }
 
-	if(Output_fd == -1){
-		perror("open");
-		return 3;
-	}
+    info = localtime( &time );
+    
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", info);
+    snprintf(buffer, sizeof(buffer),"%s %.2lf\n", timeBuf,distance); 
+    
+    rc = write (Output_fd, &buffer,strlen(buffer));
+    close (Output_fd);
 
-	rc = write (Output_fd, &buffer,strlen(buffer));
-	close (Output_fd);
-
-	return rc;
+    return rc;
 }
 
 // -------------------------------------------------------------------------
 // main
 int main(void) {
-
 	//  struct sample_data *plastsamples=NULL,*pheadsamples,*pcurrsamples;
 	struct sample_data *plastsamples,*pcurrsamples,*avgRunner; 
 	sem_init(&calculation,1,0);
@@ -183,20 +185,21 @@ int main(void) {
 	/* set up ring buffer for running avg calc */
 	pcurrsamples= plastsamples=SetupRingBuffer(RUNNING_AVG_SAMPLES);
 
+	SaveSample(time(NULL), MeasureDistance() );
+
 	// display counter value every second.
 	while ( 1 ) {
 		int i;
-
+		double percentChange;
 		pcurrsamples->distance=MeasureDistance();
-		pcurrsamples->time = time(NULL);
 #if DEBUG
-		{
-			double percentChange;
+		printf("Current Distance: %.2lf\n",pcurrsamples->distance);
+#endif
+		pcurrsamples->time = time(NULL);
+#if 1 // DEBUG
 
-			if (lastDistance) 
-				percentChange = (pcurrsamples->distance-lastDistance)/lastDistance; 
-			printf("distance: %.2lf change: %.2lf%%\n",pcurrsamples->distance,percentChange*100);
-		}
+		if (lastDistance) 
+			percentChange = 100*(pcurrsamples->distance-lastDistance)/lastDistance; 
 #endif		
 		lastDistance=pcurrsamples->distance;
 
@@ -225,10 +228,13 @@ int main(void) {
 		if ((int)difftime(finishtime,starttime) > min_sample_store_period )
 		{
 			starttime=time(NULL);
-			SaveSample(pcurrsamples);
+            SaveSample(pcurrsamples->time, pcurrsamples->distance);
 			//make sure we block until sample saved	
 		}
-
+		else if (abs(percentChange) > CHANGE_THRESHOLD_PERCENT)
+		{
+            SaveSample(pcurrsamples->time, pcurrsamples->distance);
+		}
 		/* Update sample data */
 		pcurrsamples = pcurrsamples->next;
 		delay(SAMPLE_PERIOD_ms);
