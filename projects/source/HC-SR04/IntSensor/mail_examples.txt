@@ -1,0 +1,2 @@
+mail -s  "pi test 2" <email address here> <  /dev/null
+mail -s  "pi test 3" <email address here>  <<< 'hope this works'

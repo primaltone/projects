@@ -1,0 +1,1 @@
+gcc -o IntSensor IntSensor.c -lwiringPi -pthread -Wall
