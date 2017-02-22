@@ -38,6 +38,8 @@ sem_t calculation;
 #define min_sample_store_period 30 // jwd make me a variable
 #define FILE_NAME "/mnt/nfs/home/share/sump/sump_log1.txt"
 
+#define SENSOR_TO_BOTTOM_OF_WELL_INCHES 34 // make me a variable
+
 struct sample_data {
 	double distance;
 	time_t time;
@@ -185,7 +187,7 @@ int main(void) {
 	/* set up ring buffer for running avg calc */
 	pcurrsamples= plastsamples=SetupRingBuffer(RUNNING_AVG_SAMPLES);
 
-	SaveSample(time(NULL), MeasureDistance() );
+    SaveSample(time(NULL), MeasureDistance() );
 
 	// display counter value every second.
 	while ( 1 ) {
@@ -194,6 +196,7 @@ int main(void) {
 		pcurrsamples->distance=MeasureDistance();
 #if DEBUG
 		printf("Current Distance: %.2lf\n",pcurrsamples->distance);
+		printf("Water height = %.2lf\"\n",(pcurrsamples->distance - SENSOR_TO_BOTTOM_OF_WELL_INCHES)/2.54);
 #endif
 		pcurrsamples->time = time(NULL);
 #if 1 // DEBUG
@@ -219,6 +222,7 @@ int main(void) {
 				runningavgpct =100* (lastrunningavg-avg)/lastrunningavg;   
 
 			printf("running average: %.2lf running avg percent: %.2lf%%\n",avg,runningavgpct);
+			printf("running average height: %.2lf\" running avg percent: %.2lf%%\n",(avg - SENSOR_TO_BOTTOM_OF_WELL_INCHES)/2.54,runningavgpct);
 		}
 #endif
 		lastrunningavg=avg;
