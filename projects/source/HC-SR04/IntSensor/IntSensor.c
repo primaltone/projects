@@ -1,24 +1,20 @@
 /*
-- add timestamp to sample
-- add variable for polling rate, change to 1 second default
-- add running average, make #samples variable, start with 5
-- define theshold for when to save a sample; ideally no more than 1ish sample per minute
-- add mechanism, such that even if value doesn't change per threshold, a sample is still saved at a minimum interval, such as 1 second
-- not code, really: is there a way to detect when sump runs, without adding risk to functionality?
-- make sure storing off values does not interfere with timing
-*/
-
-
-
-
+   - add timestamp to sample
+   - add variable for polling rate, change to 1 second default
+   - add running average, make #samples variable, start with 5
+   - define theshold for when to save a sample; ideally no more than 1ish sample per minute
+   - add mechanism, such that even if value doesn't change per threshold, a sample is still saved at a minimum interval, such as 1 second
+   - not code, really: is there a way to detect when sump runs, without adding risk to functionality?
+   - make sure storing off values does not interfere with timing
+ */
 /*
-Compile as follows:
+   Compile as follows:
 
-    gcc -o isr4pi isr4pi.c -lwiringPi
+   gcc -o IntSensor IntSensor.c -lwiringPi -pthread -Wall
 
-Run as follows:
+   Run as follows:
 
-    sudo ./isr4pi
+   sudo ./IntSensor
 
  */
 #include <stdio.h>
@@ -29,19 +25,23 @@ Run as follows:
 #include <sys/time.h>
 #include <semaphore.h>
 #include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
 
+
+#define DEBUG 0
 // Use GPIO Pin 17, which is Pin 0 for wiringPi library
 #define TRIGGER 0
 // Use GPIO Pin 27, which is Pin 2 for wiringPi library
 #define ECHO 2
 sem_t calculation;
-
+#define min_sample_store_period 10 // jwd make me a variable
 #define FILE_NAME "/mnt/nfs/home/share/sump/sump_log1.txt"
 
 struct sample_data {
-   double distance;
-   double time;
-   struct sample_data *next;
+	double distance;
+	time_t time;
+	struct sample_data *next;
 };
 int sample_counter = 0;
 
@@ -52,10 +52,10 @@ int sample_counter = 0;
 /* return delay in micro seconds */
 long timevaldiff(struct timeval *starttime, struct timeval *finishtime)
 {
-  long usec;
-  usec=(finishtime->tv_sec-starttime->tv_sec)*1000000;
-  usec+=(finishtime->tv_usec-starttime->tv_usec);
-  return usec;
+	long usec;
+	usec=(finishtime->tv_sec-starttime->tv_sec)*1000000;
+	usec+=(finishtime->tv_usec-starttime->tv_usec);
+	return usec;
 }
 
 double lastDistance=0;
@@ -63,104 +63,178 @@ struct timeval t1, t2 ;
 
 void timestamp(void)
 {
- time_t ltime;
+	time_t ltime;
 
-  ltime=time(NULL);
-  printf("%s",asctime(localtime(&ltime)));
+	ltime=time(NULL);
+	printf("%s",asctime(localtime(&ltime)));
 }
 
 void myInterrupt(void) {
-  int echoVal;
+	int echoVal;
 
-  echoVal = digitalRead(ECHO);
+	echoVal = digitalRead(ECHO);
 
-  if (echoVal == 1)
-  {
-     // signal went high, start timing
-     gettimeofday(&t1,NULL); 
-  }
-  else // echoVal must = 0
-  {
-    gettimeofday(&t2,NULL);
-    sem_post(&calculation); 
-  }
+	if (echoVal == 1)
+	{
+		// signal went high, start timing
+		gettimeofday(&t1,NULL); 
+	}
+	else // echoVal must = 0
+	{
+		gettimeofday(&t2,NULL);
+		sem_post(&calculation); 
+	}
 }
+
+int SetupIO(void)
+{
+	// sets up the wiringPi library
+	if (wiringPiSetup () < 0) {
+		fprintf (stderr, "Unable to setup wiringPi: %s\n", strerror (errno));
+		return -1;
+	}
+
+	/* configure trigger pin as output, init value to low */
+	pinMode(TRIGGER,OUTPUT);
+	digitalWrite(TRIGGER,0);
+
+	// set Pin 17/0 generate an interrupt on both edges. handler will process each edge
+	// and attach myInterrupt() to the interrupt
+	if ( wiringPiISR (ECHO, INT_EDGE_FALLING|INT_EDGE_RISING, &myInterrupt) < 0 ) {
+		fprintf (stderr, "Unable to setup ISR: %s\n", strerror (errno));
+		return -1;
+	}
+	return 0;
+}
+
+struct sample_data * SetupRingBuffer(const unsigned int NumElements)
+{
+	struct sample_data *plastsamples=NULL,*pcurrsamples;
+	int i;
+
+	plastsamples = (struct sample_data*)malloc(sizeof(struct sample_data) * NumElements );
+
+	pcurrsamples = plastsamples;
+
+	for (i=1;i<NumElements;i++)
+	{
+		pcurrsamples->next = pcurrsamples+1;
+		pcurrsamples = pcurrsamples->next;
+	}
+	pcurrsamples->next=plastsamples;
+
+	return plastsamples;
+}
+double MeasureDistance(void)
+{
+	long timediff;
+	double distance;
+
+	digitalWrite(TRIGGER,1);
+	delayMicroseconds(TRIGGER_DURATION_MS);
+	digitalWrite(TRIGGER,0);
+	sem_wait(&calculation);
+
+	timediff = timevaldiff(&t1,&t2);
+	distance = timediff * 17./1000.;
+
+	return distance;
+}
+
+int SaveSample(struct sample_data *pSample)
+{
+	int Output_fd,rc;
+	char buffer [128];
+	char timeBuf[128];
+	struct tm *info;
+
+	info = localtime( &pSample->time );
+
+	strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", info);
+	snprintf(buffer, sizeof(buffer),"%s %.2lf\n", timeBuf,pSample->distance); 
+	Output_fd = open(FILE_NAME, O_WRONLY | O_CREAT| O_APPEND, 0644);
+
+	if(Output_fd == -1){
+		perror("open");
+		return 3;
+	}
+
+	rc = write (Output_fd, &buffer,strlen(buffer));
+	close (Output_fd);
+
+	return rc;
+}
+
 // -------------------------------------------------------------------------
 // main
 int main(void) {
- 
-  struct sample_data *plastsamples=NULL,*pheadsamples,*pcurrsamples;
- struct sample_data *avgRunner; 
- int i; 
-  sem_init(&calculation,1,0);
-   double avg,sum,lastrunningavg=0,runningavgpct=0;
-  // sets up the wiringPi library
-  if (wiringPiSetup () < 0) {
-      fprintf (stderr, "Unable to setup wiringPi: %s\n", strerror (errno));
-      return 1;
-  }
 
- /* configure trigger pin as output, init value to low */ 
- pinMode(TRIGGER,OUTPUT);
-  digitalWrite(TRIGGER,0);
+	//  struct sample_data *plastsamples=NULL,*pheadsamples,*pcurrsamples;
+	struct sample_data *plastsamples,*pcurrsamples,*avgRunner; 
+	sem_init(&calculation,1,0);
+	double avg,sum,lastrunningavg=0;
+	time_t starttime,finishtime;;
 
-  // set Pin 17/0 generate an interrupt on both edges. handler will process each edge
-  // and attach myInterrupt() to the interrupt
-  if ( wiringPiISR (ECHO, INT_EDGE_FALLING|INT_EDGE_RISING, &myInterrupt) < 0 ) {
-      fprintf (stderr, "Unable to setup ISR: %s\n", strerror (errno));
-      return 1;
-  }
- plastsamples = (struct sample_data*)malloc(sizeof(struct sample_data) *RUNNING_AVG_SAMPLES );
-  pheadsamples = pcurrsamples = plastsamples;
-  
-  for (i=1;i<RUNNING_AVG_SAMPLES;i++)
-  {
-    pcurrsamples->next = pcurrsamples+1;
-    pcurrsamples = pcurrsamples->next;
-  }
-  pcurrsamples->next=pheadsamples;
-  pcurrsamples = pheadsamples; 
- 
-  // display counter value every second.
-  while ( 1 ) {
-   long timediff;
-    double distance,percentChange;
- 
-    digitalWrite(TRIGGER,1);
-    delayMicroseconds(TRIGGER_DURATION_MS);
-    digitalWrite(TRIGGER,0);
-    sem_wait(&calculation);
-/* calculate distance, may move to function */
-    timediff = timevaldiff(&t1,&t2);
-   distance = timediff * 17./1000.;
-   if (lastDistance) 
-         percentChange = (distance-lastDistance)/lastDistance; 
-   lastDistance=distance;
-   printf("distance: %.2lf change: %.2lf\%\n",distance,percentChange*100);
-/* end calc distance */
-    pcurrsamples->distance = distance;
-    pcurrsamples->time = time(NULL); 
-    pcurrsamples = pcurrsamples->next;
-  sum=0; 
-  avgRunner = pcurrsamples;
-for (i=0;i<RUNNING_AVG_SAMPLES;i++)
-  {
-    sum+=avgRunner->distance;
-    avgRunner=avgRunner->next;
-}
-   avg=sum/RUNNING_AVG_SAMPLES;
-   if (lastrunningavg)
-   runningavgpct =100* (lastrunningavg-avg)/lastrunningavg;   
+	starttime=time(NULL);
 
-   printf("running average: %.2lf running avg percent: %.2lf\%\n",avg,runningavgpct);
-   lastrunningavg=avg;
+	/* set up PIO's and configure interrupt */
+	SetupIO();
 
- //timestamp();
+	/* set up ring buffer for running avg calc */
+	pcurrsamples= plastsamples=SetupRingBuffer(RUNNING_AVG_SAMPLES);
 
-    delay(SAMPLE_PERIOD_ms);
-  }
+	// display counter value every second.
+	while ( 1 ) {
+		int i;
 
-  if(plastsamples) free(plastsamples);
+		pcurrsamples->distance=MeasureDistance();
+		pcurrsamples->time = time(NULL);
+#if DEBUG
+		{
+			double percentChange;
 
-  return 0;
+			if (lastDistance) 
+				percentChange = (pcurrsamples->distance-lastDistance)/lastDistance; 
+			printf("distance: %.2lf change: %.2lf%%\n",pcurrsamples->distance,percentChange*100);
+		}
+#endif		
+		lastDistance=pcurrsamples->distance;
+
+		/* running avg calculations */	
+		sum=0; 
+		avgRunner = pcurrsamples;
+		for (i=0;i<RUNNING_AVG_SAMPLES;i++)
+		{
+			sum+=avgRunner->distance;
+			avgRunner=avgRunner->next;
+		}
+		avg=sum/RUNNING_AVG_SAMPLES;
+#if DEBUG
+		{
+			double runningavgpct;
+			if (lastrunningavg)
+				runningavgpct =100* (lastrunningavg-avg)/lastrunningavg;   
+
+			printf("running average: %.2lf running avg percent: %.2lf%%\n",avg,runningavgpct);
+		}
+#endif
+		lastrunningavg=avg;
+
+		finishtime=time(NULL);
+
+		if ((int)difftime(finishtime,starttime) > min_sample_store_period )
+		{
+			starttime=time(NULL);
+			SaveSample(pcurrsamples);
+			//make sure we block until sample saved	
+		}
+
+		/* Update sample data */
+		pcurrsamples = pcurrsamples->next;
+		delay(SAMPLE_PERIOD_ms);
+	}
+	// jwd - this will never execute; proper way to free when Ctrl-C?
+	if(plastsamples) free(plastsamples);
+
+	return 0;
 }
