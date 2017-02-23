@@ -53,6 +53,27 @@ int sample_counter = 0;
 #define RUNNING_AVG_SAMPLES 5
 #define CHANGE_THRESHOLD_PERCENT 4
 
+int sendmail(const char *to, const char *from, const char *subject, const char *message)
+{
+	int retval = -1;
+	FILE *mailpipe = popen("/usr/lib/sendmail -t", "w");
+	if (mailpipe != NULL) {
+		fprintf(mailpipe, "To: %s\n", to);
+		fprintf(mailpipe, "From: %s\n", from);
+		fprintf(mailpipe, "Subject: %s\n\n", subject);
+		fwrite(message, 1, strlen(message), mailpipe);
+		fwrite(".\n", 1, 2, mailpipe);
+		pclose(mailpipe);
+		retval = 0;
+	}
+	else {
+		perror("Failed to invoke sendmail");
+	}
+	return retval;
+}
+
+
+
 /* return delay in micro seconds */
 long timevaldiff(struct timeval *starttime, struct timeval *finishtime)
 {
@@ -144,30 +165,26 @@ double MeasureDistance(void)
 
 	return distance;
 }
-
 int SaveSample(const time_t time, const double distance)
-{   
-    int Output_fd,rc;
-    char buffer [128];
-    char timeBuf[128];
-    struct tm *info;
+{
+	int Output_fd,rc; char buffer [128]; char timeBuf[128]; struct tm *info;
 
-    Output_fd = open(FILE_NAME, O_WRONLY | O_CREAT| O_APPEND, 0644);
+	Output_fd = open(FILE_NAME, O_WRONLY | O_CREAT| O_APPEND, 0644);
 
-    if(Output_fd == -1){
-        perror("open");
-        return 3;
-    }
+	if(Output_fd == -1){
+		perror("open");
+		return 3;
+	}
 
-    info = localtime( &time );
-    
-    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", info);
-    snprintf(buffer, sizeof(buffer),"%s %.2lf\n", timeBuf,distance); 
-    
-    rc = write (Output_fd, &buffer,strlen(buffer));
-    close (Output_fd);
+	info = localtime( &time );
 
-    return rc;
+	strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", info);
+	snprintf(buffer, sizeof(buffer),"%s %.2lf\n", timeBuf,distance); 
+
+	rc = write (Output_fd, &buffer,strlen(buffer));
+	close (Output_fd);
+
+	return rc;
 }
 
 // -------------------------------------------------------------------------
@@ -178,8 +195,11 @@ int main(void) {
 	sem_init(&calculation,1,0);
 	double avg,sum,lastrunningavg=0;
 	time_t starttime,finishtime;;
-
+	int index=0; //get rid of me
 	starttime=time(NULL);
+	/* test 1, sump test started */
+
+	sendmail("","","sump monitor info: started","monitoring started");
 
 	/* set up PIO's and configure interrupt */
 	SetupIO();
@@ -187,17 +207,32 @@ int main(void) {
 	/* set up ring buffer for running avg calc */
 	pcurrsamples= plastsamples=SetupRingBuffer(RUNNING_AVG_SAMPLES);
 
-    SaveSample(time(NULL), MeasureDistance() );
+	SaveSample(time(NULL), MeasureDistance() );
 
 	// display counter value every second.
 	while ( 1 ) {
 		int i;
 		double percentChange;
+		char  waterLevel[256];
+
 		pcurrsamples->distance=MeasureDistance();
 #if DEBUG
 		printf("Current Distance: %.2lf\n",pcurrsamples->distance);
 		printf("Water height = %.2lf\"\n",(pcurrsamples->distance - SENSOR_TO_BOTTOM_OF_WELL_INCHES)/2.54);
 #endif
+		/* basic test #1: send periodic email */
+		/* next improvements: add feature for periodic email, 
+		   send if threshold met (make sure to limit texts) */
+		snprintf(waterLevel,sizeof(waterLevel),"water height: %.2lf\"",(pcurrsamples->distance - SENSOR_TO_BOTTOM_OF_WELL_INCHES)/2.54);
+
+#define MINUTES (4*60)
+#define SECONDS (MINUTES*60)
+#define INTERVAL  (SECONDS/(SAMPLE_PERIOD_ms/1000)) // jwd -this is terrible. fix this 
+		if ((index % INTERVAL)==0)
+		{
+			sendmail("","","sump monitor info: test",waterLevel);
+		}
+		printf("index: %d\n",index);
 		pcurrsamples->time = time(NULL);
 #if 1 // DEBUG
 
@@ -232,16 +267,17 @@ int main(void) {
 		if ((int)difftime(finishtime,starttime) > min_sample_store_period )
 		{
 			starttime=time(NULL);
-            SaveSample(pcurrsamples->time, pcurrsamples->distance);
+			SaveSample(pcurrsamples->time, pcurrsamples->distance);
 			//make sure we block until sample saved	
 		}
 		else if (abs(percentChange) > CHANGE_THRESHOLD_PERCENT)
 		{
-            SaveSample(pcurrsamples->time, pcurrsamples->distance);
+			SaveSample(pcurrsamples->time, pcurrsamples->distance);
 		}
 		/* Update sample data */
 		pcurrsamples = pcurrsamples->next;
 		delay(SAMPLE_PERIOD_ms);
+		index++;
 	}
 	// jwd - this will never execute; proper way to free when Ctrl-C?
 	if(plastsamples) free(plastsamples);
