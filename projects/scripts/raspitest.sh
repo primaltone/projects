@@ -4,6 +4,7 @@ HEIGHT=1024
 QUALITY=40
 ROTATION=180
 DELAY=1
+EXP_NIGHT=0
 FILE_DIR=/mnt/750GBShare/Share750/WC/02052017
 
 usage()
@@ -19,6 +20,7 @@ usage()
  echo "-q --> jpeg quality (defaults to $QUALITY)"
  echo "-d --> delay between captures (defaults to $DELAY)"
  echo "-r --> rotation (defaults to $ROTATION)"
+ echo "-n --> enable automatic exposure mode for day/night (defaults to $EXP_NIGHT) "
 }
 
 ############################################################################################
@@ -31,7 +33,7 @@ OPTIND=1         # Reset in case getopts has been used previously in the shell.
 
 # Initialize our own variables:
 
-while getopts "P:p:h:w:q:r:d:h" opt; do
+while getopts "P:p:h:w:q:r:d:hn:" opt; do
     case "$opt" in
     P)
         PRIMARY_PATH=$OPTARG
@@ -54,6 +56,10 @@ while getopts "P:p:h:w:q:r:d:h" opt; do
     d)  
         DELAY=$OPTARG
         ;;
+    n)  
+        EXP_NIGHT=$OPTARG
+        echo "enabling automatic exposure compensation"
+        ;;
     h) # print usage
         usage
         exit 0
@@ -73,17 +79,22 @@ fi
 
 echo "PRIMARY_PATH: $PRIMARY_PATH QUALITY: $QUALITY WIDTH: $WIDTH HEIGHT: $HEIGHT DELAY: $DELAY"
 
-
-i=1
 while true
 do
-  echo "image $i"
   i=$((i+1))
   DATE=`date +%Y-%m-%d:%H:%M:%S` 
-# night  raspistill -ss 500000 -ex night -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $PRIMARY_PATH/Pic$DATE.jpg
-  raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $PRIMARY_PATH/Pic$DATE.jpg
-
- # echo "raspistill -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $PRIMARY_PATH/Pic$DATE.jpg"
-  #fswebcam -S 10 $FILE_DIR/Pic$DATE.jpg 
+if [[ $EXP_NIGHT == "1" ]]; then
+   EXPOSURE_MODE=`./suntest.sh`
+   if [[ $EXPOSURE_MODE == "night" ]]; then
+      echo "using night mode"  
+      raspistill -ss 500000 -ex night -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $PRIMARY_PATH/Pic$DATE.jpg
+   else
+      echo "using auto mode"  
+        raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $PRIMARY_PATH/Pic$DATE.jpg
+   fi
+else
+      echo "using auto mode"  
+   raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $PRIMARY_PATH/Pic$DATE.jpg
+fi
 sleep $DELAY 
 done
