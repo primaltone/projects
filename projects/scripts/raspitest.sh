@@ -1,11 +1,35 @@
 VERSION=1.0
 WIDTH=1280
 HEIGHT=1024
-QUALITY=40
+QUALITY=100
+#QUALITY=40
 ROTATION=180
 DELAY=1
 EXP_NIGHT=0
-FILE_DIR=/mnt/750GBShare/Share750/WC/02052017
+
+UpdateSaveDir()
+{
+   MONTH=$(date +%m)
+   DAY=$(date +%d)
+   YEAR=$(date +%Y)
+
+   BASE_PATH=$1
+
+   if [ -d  $BASE_PATH ]; then
+#      echo "path exists"
+      if [ ! -d $BASE_PATH/$MONTH$DAY$YEAR ]; then
+         mkdir $BASE_PATH/$MONTH$DAY$YEAR
+         if [ ! -d $BASE_PATH/$MONTH$DAY$YEAR ]; then
+            echo ""
+            return
+         fi
+      fi
+   else
+      echo ""
+      return
+   fi
+   echo $BASE_PATH/$MONTH$DAY$YEAR   
+}
 
 usage()
 {
@@ -70,31 +94,31 @@ shift $((OPTIND-1))
 
 [ "$1" = "--" ] && shift
 
-if [[ $PATH == "" ]]; then
+if [[ $PRIMARY_PATH == "" ]]; then
     echo "must provide path for file storage"
     # make sure to check this path later
     usage
     exit
 fi
 
-echo "PRIMARY_PATH: $PRIMARY_PATH QUALITY: $QUALITY WIDTH: $WIDTH HEIGHT: $HEIGHT DELAY: $DELAY"
-
 while true
 do
   i=$((i+1))
+  # Create save path if necessary
+  SavePath=$(UpdateSaveDir $PRIMARY_PATH)
   DATE=`date +%Y-%m-%d:%H:%M:%S` 
 if [[ $EXP_NIGHT == "1" ]]; then
    EXPOSURE_MODE=`./suntest.sh`
    if [[ $EXPOSURE_MODE == "night" ]]; then
       echo "using night mode"  
-      raspistill -ss 500000 -ex night -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $PRIMARY_PATH/Pic$DATE.jpg
+      raspistill -ss 500000 -ex night -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 1000 -w $WIDTH -h $HEIGHT -drc high -o $SavePath/Pic$DATE.jpg
    else
       echo "using auto mode"  
-        raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $PRIMARY_PATH/Pic$DATE.jpg
+        raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $SavePath/Pic$DATE.jpg
    fi
 else
       echo "using auto mode"  
-   raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $PRIMARY_PATH/Pic$DATE.jpg
+   raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $SavePath/Pic$DATE.jpg
 fi
 sleep $DELAY 
 done
