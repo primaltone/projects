@@ -28,7 +28,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-
+#define VERSION 1.1
 #define DEBUG 1
 // Use GPIO Pin 17, which is Pin 0 for wiringPi library
 #define TRIGGER 0
@@ -37,27 +37,36 @@
 sem_t calculation;
 #define min_sample_store_period 30 // jwd make me a variable
 #define FILE_NAME "/mnt/nfs/home/share/sump/sump_log1.txt"
-
+#define DISTANCE_UNITS INCHES
 #define SENSOR_TO_BOTTOM_OF_WELL_INCHES 34 // make me a variable
+#define TEMP_FILE "/var/tmp/sump_info.txt"
 
 struct sample_data {
 	double distance;
 	time_t time;
 	struct sample_data *next;
 };
-int sample_counter = 0;
+
+typedef enum 
+{
+	INCHES,
+	CM
+} UNITS;
 
 // defines that should become variables
 #define SAMPLE_PERIOD_ms 2000
 #define TRIGGER_DURATION_MS 10
 #define RUNNING_AVG_SAMPLES 5
 #define CHANGE_THRESHOLD_PERCENT 4
-
+#define ALERT_THRESHOLD 24
 int sendmail(const char *to, const char *from, const char *subject, const char *message)
 {
 	int retval = -1;
+#if 0
+	printf("email: %s %s\n",subject,message);
+#else
 	FILE *mailpipe = popen("/usr/lib/sendmail -t", "w");
-	if (mailpipe != NULL) {
+	if ((mailpipe != NULL) && to && from && subject && message) {
 		fprintf(mailpipe, "To: %s\n", to);
 		fprintf(mailpipe, "From: %s\n", from);
 		fprintf(mailpipe, "Subject: %s\n\n", subject);
@@ -69,10 +78,9 @@ int sendmail(const char *to, const char *from, const char *subject, const char *
 	else {
 		perror("Failed to invoke sendmail");
 	}
+#endif
 	return retval;
 }
-
-
 
 /* return delay in micro seconds */
 long timevaldiff(struct timeval *starttime, struct timeval *finishtime)
@@ -85,15 +93,6 @@ long timevaldiff(struct timeval *starttime, struct timeval *finishtime)
 
 double lastDistance=0;
 struct timeval t1, t2 ;
-
-void timestamp(void)
-{
-	time_t ltime;
-
-	ltime=time(NULL);
-	printf("%s",asctime(localtime(&ltime)));
-}
-
 void myInterrupt(void) {
 	int echoVal;
 
@@ -150,7 +149,8 @@ struct sample_data * SetupRingBuffer(const unsigned int NumElements)
 
 	return plastsamples;
 }
-double MeasureDistance(void)
+
+double MeasureDistance( UNITS UnitSetting )
 {
 	long timediff;
 	double distance;
@@ -162,12 +162,28 @@ double MeasureDistance(void)
 
 	timediff = timevaldiff(&t1,&t2);
 	distance = timediff * 17./1000.;
-
+	if (UnitSetting == INCHES)
+	{
+		distance /= 2.54;	
+	}
 	return distance;
 }
+
+void FormatTime(const time_t time, char *timeStr,const int bufsize)
+{
+	struct tm *info;
+	
+	if (timeStr)
+	{
+		info = localtime( &time );
+		strftime(timeStr, bufsize, "%Y-%m-%d %H:%M:%S %Z", info);
+	}
+}
+
+
 int SaveSample(const time_t time, const double distance)
 {
-	int Output_fd,rc; char buffer [128]; char timeBuf[128]; struct tm *info;
+	int Output_fd,rc; char buffer [128]; char timeBuf[128];
 
 	Output_fd = open(FILE_NAME, O_WRONLY | O_CREAT| O_APPEND, 0644);
 
@@ -176,69 +192,163 @@ int SaveSample(const time_t time, const double distance)
 		return 3;
 	}
 
-	info = localtime( &time );
-
-	strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", info);
-	snprintf(buffer, sizeof(buffer),"%s %.2lf\n", timeBuf,distance); 
-
+	FormatTime(time,timeBuf,sizeof(timeBuf));
+	snprintf(buffer, sizeof(buffer),"%s %.2lf\n", timeBuf,distance);
 	rc = write (Output_fd, &buffer,strlen(buffer));
 	close (Output_fd);
 
 	return rc;
 }
+void PrintSyntax( char *executableName )
+{
+        printf("\n  %s Version %.2f\n",executableName,VERSION);
+        printf("\n  Options:");
+        printf("\n  -m : set email notification address");
+        printf("\n  -? : program description\n");
+}
 
 // -------------------------------------------------------------------------
-// main
-int main(void) {
-	//  struct sample_data *plastsamples=NULL,*pheadsamples,*pcurrsamples;
+int main( int argc, char * argv[] ) {
 	struct sample_data *plastsamples,*pcurrsamples,*avgRunner; 
 	sem_init(&calculation,1,0);
-	double avg,sum,lastrunningavg=0;
+	double avg,sum,sensorToBottomOfWell ;
 	time_t starttime,finishtime;;
-	int index=0; //get rid of me
+	int tmpFileFD = -1;
+	int alertCount = 0, index=0; 
+	int numOptions;
+	char *emailAddressTo=NULL; 
+	char *emailAddressFrom=NULL; 
+
+///////////////
+    /* first check to see if a help screen is desired */
+
+    if ( (argc > 1) &&  ( ((argv[1][0] == '/') || (argv[1][0] == '-')) && (argv[1][1] == '?')) )
+    {
+        PrintSyntax(argv[0]);
+        exit(-1);
+    }
+
+    /* now check for options */
+    /* add 1 to index to account for program name*/
+
+    if (argc > 1) // don't attempt to read if no argument exists
+    {
+        numOptions = 1;
+        while (argc > numOptions)
+        {
+            switch (argv[numOptions][1])
+            {
+            /* check to see if user wants associated file names at the top of */
+            /* each column */
+            
+            case 'm':
+		if ( argc >= numOptions)
+		{
+			numOptions++;
+                	emailAddressTo = argv[numOptions];
+			printf("Sending email notifications to: %s\n",emailAddressTo);
+	                numOptions++;
+		}
+		else
+		{
+                	PrintSyntax(argv[0]);
+	                exit(-1);
+		}
+                break;
+            case 'f':
+		if ( argc >= numOptions)
+		{
+			numOptions++;
+                	emailAddressFrom = argv[numOptions];
+			printf("Sending email notifications From: %s\n",emailAddressFrom);
+	                numOptions++;
+		}
+		else
+		{
+                	PrintSyntax(argv[0]);
+	                exit(-1);
+		}
+                break;
+            default:
+                printf("\n%c%c is not a valid option",argv[numOptions][0],argv[numOptions][1]);
+                PrintSyntax(argv[0]);
+                exit(-1);
+                break;
+            }
+        }
+    }
+    else
+    {
+        PrintSyntax(argv[0]);
+        exit(-1);
+    }
+
+//////////////
+
+#if 0
+jwd next steps:
+ parameter to save to sd if no server
+#endif
+
+	if (DISTANCE_UNITS == CM)
+		sensorToBottomOfWell = SENSOR_TO_BOTTOM_OF_WELL_INCHES*2.54;  
+	else
+		sensorToBottomOfWell = SENSOR_TO_BOTTOM_OF_WELL_INCHES;  
+	
 	starttime=time(NULL);
 	/* test 1, sump test started */
 
-	sendmail("","","sump monitor info: started","monitoring started");
+	sendmail(emailAddressTo,emailAddressFrom,"sump monitor info: started","monitoring started");
 
 	/* set up PIO's and configure interrupt */
 	SetupIO();
 
 	/* set up ring buffer for running avg calc */
 	pcurrsamples= plastsamples=SetupRingBuffer(RUNNING_AVG_SAMPLES);
-
-	SaveSample(time(NULL), MeasureDistance() );
+	SaveSample(time(NULL),sensorToBottomOfWell -  MeasureDistance( DISTANCE_UNITS ));
 
 	// display counter value every second.
 	while ( 1 ) {
 		int i;
 		double percentChange;
 		char  waterLevel[256];
+		char timeBuf[128];
 
-		pcurrsamples->distance=MeasureDistance();
-#if DEBUG
-		printf("Current Distance: %.2lf\n",pcurrsamples->distance);
-		printf("Water height = %.2lf\"\n",(pcurrsamples->distance - SENSOR_TO_BOTTOM_OF_WELL_INCHES)/2.54);
-#endif
-		/* basic test #1: send periodic email */
-		/* next improvements: add feature for periodic email, 
-		   send if threshold met (make sure to limit texts) */
-		snprintf(waterLevel,sizeof(waterLevel),"water height: %.2lf\"",(pcurrsamples->distance - SENSOR_TO_BOTTOM_OF_WELL_INCHES)/2.54);
-
-#define MINUTES (4*60)
-#define SECONDS (MINUTES*60)
-#define INTERVAL  (SECONDS/(SAMPLE_PERIOD_ms/1000)) // jwd -this is terrible. fix this 
-		if ((index % INTERVAL)==0)
-		{
-			sendmail("","","sump monitor info: test",waterLevel);
-		}
-		printf("index: %d\n",index);
+		pcurrsamples->distance=MeasureDistance( DISTANCE_UNITS );
 		pcurrsamples->time = time(NULL);
-#if 1 // DEBUG
+#if DEBUG
+		printf("Index: %d Current Sensor Distance: %.2lf%s\t",index,pcurrsamples->distance,(DISTANCE_UNITS==INCHES? "\"":"cm"));
+		printf("Water height = %.2lf%s\n",(sensorToBottomOfWell -pcurrsamples->distance),(DISTANCE_UNITS==INCHES? "\"":"cm"));
+#endif
+		FormatTime(pcurrsamples->time,timeBuf,sizeof(timeBuf));
+		snprintf(waterLevel,sizeof(waterLevel),"%s water height running avg: %.2lf%s",timeBuf,
+		  (sensorToBottomOfWell - avg),(DISTANCE_UNITS==INCHES)? "\"":"cm");
+	
+		tmpFileFD = open(TEMP_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (tmpFileFD < 0)
+		{
+			perror("failed to open tmp file");
+		}
+		else
+		{
+			write (tmpFileFD, &waterLevel,strlen(waterLevel));
+			close (tmpFileFD);
+		}
+
+		if (((sensorToBottomOfWell - avg) > ALERT_THRESHOLD) &&
+                    (index > RUNNING_AVG_SAMPLES))
+		{
+			if (alertCount < 3)
+			{
+				/* don't want to flood email */
+				sendmail(emailAddressTo,emailAddressFrom,"Sump Monitor WARNING!!\n%s ",waterLevel);
+				alertCount++;
+			}
+		}
 
 		if (lastDistance) 
 			percentChange = 100*(pcurrsamples->distance-lastDistance)/lastDistance; 
-#endif		
+		
 		lastDistance=pcurrsamples->distance;
 
 		/* running avg calculations */	
@@ -250,29 +360,18 @@ int main(void) {
 			avgRunner=avgRunner->next;
 		}
 		avg=sum/RUNNING_AVG_SAMPLES;
-#if DEBUG
-		{
-			double runningavgpct;
-			if (lastrunningavg)
-				runningavgpct =100* (lastrunningavg-avg)/lastrunningavg;   
-
-			printf("running average: %.2lf running avg percent: %.2lf%%\n",avg,runningavgpct);
-			printf("running average height: %.2lf\" running avg percent: %.2lf%%\n",(avg - SENSOR_TO_BOTTOM_OF_WELL_INCHES)/2.54,runningavgpct);
-		}
-#endif
-		lastrunningavg=avg;
 
 		finishtime=time(NULL);
 
-		if ((int)difftime(finishtime,starttime) > min_sample_store_period )
+		if ((int)difftime(finishtime,starttime) > min_sample_store_period ) // jwd wrong? only grabbing start time once?
 		{
 			starttime=time(NULL);
-			SaveSample(pcurrsamples->time, pcurrsamples->distance);
+			SaveSample(pcurrsamples->time,sensorToBottomOfWell - pcurrsamples->distance);
 			//make sure we block until sample saved	
 		}
 		else if (abs(percentChange) > CHANGE_THRESHOLD_PERCENT)
 		{
-			SaveSample(pcurrsamples->time, pcurrsamples->distance);
+			SaveSample(pcurrsamples->time,sensorToBottomOfWell - pcurrsamples->distance);
 		}
 		/* Update sample data */
 		pcurrsamples = pcurrsamples->next;
@@ -281,6 +380,7 @@ int main(void) {
 	}
 	// jwd - this will never execute; proper way to free when Ctrl-C?
 	if(plastsamples) free(plastsamples);
+	close(tmpFileFD);
 
 	return 0;
 }
