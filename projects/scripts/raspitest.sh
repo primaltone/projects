@@ -114,11 +114,11 @@ if [[ $EXP_NIGHT == "1" ]]; then
       raspistill -ss 500000 -ex night -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 1000 -w $WIDTH -h $HEIGHT -drc high -o $SavePath/Pic$DATE.jpg
    else
       echo "using auto mode"  
-        raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $SavePath/Pic$DATE.jpg
+        raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 1000 -w $WIDTH -h $HEIGHT -o $SavePath/Pic$DATE.jpg
    fi
 else
       echo "using auto mode"  
-   raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 500 -w $WIDTH -h $HEIGHT -o $SavePath/Pic$DATE.jpg
+   raspistill -ex auto -md 0 -awb auto -q $QUALITY -rot $ROTATION -t 1000 -w $WIDTH -h $HEIGHT -o $SavePath/Pic$DATE.jpg
 fi
 sleep $DELAY 
 done
