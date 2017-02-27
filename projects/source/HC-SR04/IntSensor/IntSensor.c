@@ -36,11 +36,12 @@
 #define ECHO 2
 sem_t calculation;
 #define min_sample_store_period 30 // jwd make me a variable
-#define FILE_NAME "/mnt/nfs/home/share/sump/sump_log1.txt"
+#define REMOTE_FILE_NAME "/mnt/nfs/home/share/sump/sump_log1.txt"
 #define DISTANCE_UNITS INCHES
 #define SENSOR_TO_BOTTOM_OF_WELL_INCHES 34 // make me a variable
 #define TEMP_FILE "/var/tmp/sump_info.txt"
-
+int verbose=0;
+int sensorErrorCount = 0;
 struct sample_data {
 	double distance;
 	time_t time;
@@ -58,15 +59,23 @@ typedef enum
 #define TRIGGER_DURATION_MS 10
 #define RUNNING_AVG_SAMPLES 5
 #define CHANGE_THRESHOLD_PERCENT 4
-#define ALERT_THRESHOLD 24
+
 int sendmail(const char *to, const char *from, const char *subject, const char *message)
 {
 	int retval = -1;
-#if 0
-	printf("email: %s %s\n",subject,message);
-#else
-	FILE *mailpipe = popen("/usr/lib/sendmail -t", "w");
-	if ((mailpipe != NULL) && to && from && subject && message) {
+	
+	FILE *mailpipe;
+	
+	if (!to)
+	{
+		printf("Error: must specify email \"to\" address\n");
+	}
+	else if (!from)
+	{
+		printf("Error: must specify email \"from\" address\n");
+	}
+	else if ((mailpipe = popen("/usr/lib/sendmail -t", "w")) != NULL)
+	{
 		fprintf(mailpipe, "To: %s\n", to);
 		fprintf(mailpipe, "From: %s\n", from);
 		fprintf(mailpipe, "Subject: %s\n\n", subject);
@@ -75,10 +84,8 @@ int sendmail(const char *to, const char *from, const char *subject, const char *
 		pclose(mailpipe);
 		retval = 0;
 	}
-	else {
-		perror("Failed to invoke sendmail");
-	}
-#endif
+	if (verbose) printf("email: %s %s\n",subject,message);
+
 	return retval;
 }
 
@@ -181,21 +188,28 @@ void FormatTime(const time_t time, char *timeStr,const int bufsize)
 }
 
 
-int SaveSample(const time_t time, const double distance)
+int SaveSample(const time_t time, const double distance, char *remoteFileSave, char *localFileSave)
 {
-	int Output_fd,rc; char buffer [128]; char timeBuf[128];
+	int Output_fd, rc=-1; char buffer [128]; char timeBuf[128];
 
-	Output_fd = open(FILE_NAME, O_WRONLY | O_CREAT| O_APPEND, 0644);
-
-	if(Output_fd == -1){
-		perror("open");
-		return 3;
+	if(remoteFileSave && (Output_fd = open(remoteFileSave, O_WRONLY | O_CREAT| O_APPEND, 0644)) >= 0 )
+	{
+		/* remote availale */
+	}
+	else if(localFileSave && (Output_fd = open(localFileSave, O_WRONLY | O_CREAT| O_APPEND, 0644)) >= 0 )
+	{
+		/* local availale */
 	}
 
-	FormatTime(time,timeBuf,sizeof(timeBuf));
-	snprintf(buffer, sizeof(buffer),"%s %.2lf\n", timeBuf,distance);
-	rc = write (Output_fd, &buffer,strlen(buffer));
-	close (Output_fd);
+	if(Output_fd >= 0)
+	{
+		FormatTime(time,timeBuf,sizeof(timeBuf));
+		snprintf(buffer, sizeof(buffer),"%s %.2lf%s\n", timeBuf,distance,(DISTANCE_UNITS==INCHES? "\"":"cm"));
+		rc = write (Output_fd, &buffer,strlen(buffer));
+		close (Output_fd);
+	}
+	else
+		printf("Warning: unable to open local or remote file for save\n");
 
 	return rc;
 }
@@ -203,21 +217,38 @@ void PrintSyntax( char *executableName )
 {
         printf("\n  %s Version %.2f\n",executableName,VERSION);
         printf("\n  Options:");
-        printf("\n  -m : set email notification address");
+        printf("\n  -t : set email notification \"to\" address");
+        printf("\n  -f : set email notification \"from\" address");
+        printf("\n  -r : remote date file");
+        printf("\n  -l : local data file - to be used if remote not available");
+        printf("\n  -v : set verbose mode");
         printf("\n  -? : program description\n");
 }
 
-// -------------------------------------------------------------------------
+double MeasureAndValidate(UNITS units, double sensorHeight)
+{
+	double distance;
+	while((distance = MeasureDistance(units)) > sensorHeight)
+	{
+		sensorErrorCount++;
+		printf("Error: invalid reading. Numerrs: sensorErrorCount %d --  sensor distance = %.2lf sensorToBottomOfWell = %.2lf\n",sensorErrorCount,distance, sensorHeight);
+		delay(1000);
+	}
+	return distance;
+}
+
 int main( int argc, char * argv[] ) {
 	struct sample_data *plastsamples,*pcurrsamples,*avgRunner; 
 	sem_init(&calculation,1,0);
-	double avg,sum,sensorToBottomOfWell ;
+	double avg,sum,sensorToBottomOfWell,sensorDistance,AlertThreshold=0;
 	time_t starttime,finishtime;;
 	int tmpFileFD = -1;
 	int alertCount = 0, index=0; 
 	int numOptions;
 	char *emailAddressTo=NULL; 
-	char *emailAddressFrom=NULL; 
+	char *emailAddressFrom=NULL;
+	char *remoteFile;
+	char *localFile;
 
 ///////////////
     /* first check to see if a help screen is desired */
@@ -241,34 +272,90 @@ int main( int argc, char * argv[] ) {
             /* check to see if user wants associated file names at the top of */
             /* each column */
             
-            case 'm':
-		if ( argc >= numOptions)
-		{
-			numOptions++;
-                	emailAddressTo = argv[numOptions];
-			printf("Sending email notifications to: %s\n",emailAddressTo);
-	                numOptions++;
-		}
-		else
-		{
+            case 'a':
+			if ( argc >= numOptions)
+			{
+				numOptions++;
+               	AlertThreshold = atof(argv[numOptions]);
+				printf("Alert Threshold set to: %.2lf\n",AlertThreshold);
+	     	    numOptions++;
+			}
+			else
+			{
                 	PrintSyntax(argv[0]);
 	                exit(-1);
-		}
-                break;
-            case 'f':
-		if ( argc >= numOptions)
-		{
-			numOptions++;
-                	emailAddressFrom = argv[numOptions];
-			printf("Sending email notifications From: %s\n",emailAddressFrom);
-	                numOptions++;
-		}
-		else
-		{
+			}
+            break;
+            case 't':
+			if ( argc >= numOptions)
+			{
+				numOptions++;
+               	emailAddressTo = argv[numOptions];
+				printf("Sending email notifications to: %s\n",emailAddressTo);
+	     	    numOptions++;
+			}
+			else
+			{
                 	PrintSyntax(argv[0]);
 	                exit(-1);
-		}
-                break;
+			}
+            break;
+           
+			case 'f':
+			if ( argc >= numOptions)
+			{
+				numOptions++;
+           		emailAddressFrom = argv[numOptions];
+				printf("Sending email notifications from: %s\n",emailAddressFrom);
+	        	numOptions++;
+			}
+			else
+			{
+                	PrintSyntax(argv[0]);
+	                exit(-1);
+			}
+            break;
+   
+			case 'r':
+			if ( argc >= numOptions)
+			{
+				numOptions++;
+           		remoteFile = argv[numOptions];
+				printf("Using %s for remote file save\n",remoteFile);
+	        	numOptions++;
+			}
+			else
+			{
+                	PrintSyntax(argv[0]);
+	                exit(-1);
+			}
+            break;
+			case 'l':
+			if ( argc >= numOptions)
+			{
+				numOptions++;
+           		localFile = argv[numOptions];
+				printf("Using %s for local file save if remote not available\n",localFile);
+	        	numOptions++;
+			}
+			else
+			{
+                	PrintSyntax(argv[0]);
+	                exit(-1);
+			}
+            break;
+			case 'v':
+			if ( argc >= numOptions)
+			{
+	        	verbose=1;
+				numOptions++;
+			}
+			else
+			{
+                	PrintSyntax(argv[0]);
+	                exit(-1);
+			}
+            break;
             default:
                 printf("\n%c%c is not a valid option",argv[numOptions][0],argv[numOptions][1]);
                 PrintSyntax(argv[0]);
@@ -305,7 +392,9 @@ jwd next steps:
 
 	/* set up ring buffer for running avg calc */
 	pcurrsamples= plastsamples=SetupRingBuffer(RUNNING_AVG_SAMPLES);
-	SaveSample(time(NULL),sensorToBottomOfWell -  MeasureDistance( DISTANCE_UNITS ));
+
+	sensorDistance = MeasureAndValidate(DISTANCE_UNITS,sensorToBottomOfWell);
+	SaveSample(time(NULL),sensorToBottomOfWell - sensorDistance, remoteFile, localFile );
 
 	// display counter value every second.
 	while ( 1 ) {
@@ -313,8 +402,8 @@ jwd next steps:
 		double percentChange;
 		char  waterLevel[256];
 		char timeBuf[128];
-
-		pcurrsamples->distance=MeasureDistance( DISTANCE_UNITS );
+		
+		pcurrsamples->distance = MeasureAndValidate(DISTANCE_UNITS,sensorToBottomOfWell);
 		pcurrsamples->time = time(NULL);
 #if DEBUG
 		printf("Index: %d Current Sensor Distance: %.2lf%s\t",index,pcurrsamples->distance,(DISTANCE_UNITS==INCHES? "\"":"cm"));
@@ -335,8 +424,9 @@ jwd next steps:
 			close (tmpFileFD);
 		}
 
-		if (((sensorToBottomOfWell - avg) > ALERT_THRESHOLD) &&
-                    (index > RUNNING_AVG_SAMPLES))
+		if ((AlertThreshold > 0) &&
+			((sensorToBottomOfWell - avg) > AlertThreshold) &&
+            (index > RUNNING_AVG_SAMPLES))
 		{
 			if (alertCount < 3)
 			{
@@ -366,12 +456,12 @@ jwd next steps:
 		if ((int)difftime(finishtime,starttime) > min_sample_store_period ) // jwd wrong? only grabbing start time once?
 		{
 			starttime=time(NULL);
-			SaveSample(pcurrsamples->time,sensorToBottomOfWell - pcurrsamples->distance);
+			SaveSample(pcurrsamples->time,sensorToBottomOfWell - pcurrsamples->distance, remoteFile, localFile );
 			//make sure we block until sample saved	
 		}
 		else if (abs(percentChange) > CHANGE_THRESHOLD_PERCENT)
 		{
-			SaveSample(pcurrsamples->time,sensorToBottomOfWell - pcurrsamples->distance);
+			SaveSample(pcurrsamples->time,sensorToBottomOfWell - pcurrsamples->distance, remoteFile, localFile );
 		}
 		/* Update sample data */
 		pcurrsamples = pcurrsamples->next;
